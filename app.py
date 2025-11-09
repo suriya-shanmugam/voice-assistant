@@ -7,6 +7,7 @@ import numpy as np
 import warnings
 import logging
 import os
+import re # Added for sentence splitting
 
 # Suppress specific warnings (like the torch.cuda.amp.autocast one)
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -70,19 +71,32 @@ def generate_and_play_audio(text_prompt):
         return
         
     print("Synthesizing speech with Bark...")
-    # Bark can still be a bit chatty with tqdm progress bars internally.
-    # Completely silencing it often requires deeper monkey-patching of tqdm,
-    # but suppressing warnings helps significantly.
-    audio_array = generate_audio(
-        text_prompt,
-        history_prompt="v2/en_speaker_6", # A sample voice
-        text_temp=0.7,
-        silent=True # Try to silence bark progress if supported by your version
-    )
+    
+    # 1. Clean up text (remove newlines that might confuse splitter)
+    text_prompt = text_prompt.replace("\n", " ").strip()
 
-    print("Playing audio...")
-    sd.play(audio_array, samplerate=SAMPLE_RATE)
-    sd.wait()
+    # 2. Split text into sentences using regex.
+    # Looks for '.', '!', '?' followed by a space or end of string.
+    sentences = re.split(r'(?<=[.!?])\s+', text_prompt)
+
+    # 3. Generate and play each sentence sequentially
+    for sentence in sentences:
+        if len(sentence.strip()) < 2:
+             continue # Skip empty or tiny weird chunks
+
+        # print(f"Playing chunk: '{sentence[:20]}...'") # Optional debug
+        
+        # silence=True tries to suppress internal Bark progress bars
+        audio_array = generate_audio(
+            sentence,
+            history_prompt="v2/en_speaker_6",
+            text_temp=0.7,
+            silent=True 
+        )
+
+        sd.play(audio_array, samplerate=SAMPLE_RATE)
+        sd.wait() # Wait for this sentence to finish before starting the next one
+
     print("Audio playback complete.")
 
 # --- Main Orchestration Loop ---
@@ -109,9 +123,6 @@ def main():
     # --- Pre-load models ---
     print("Pre-loading Whisper and Bark models... (this may take a moment)")
     
-    # Suppress stdout/stderr temporarily for very noisy load operations if needed
-    # sys.stdout = open(os.devnull, 'w')
-    
     whisper.load_model(WHISPER_MODEL)
     preload_models(
         text_use_gpu=True,
@@ -124,8 +135,6 @@ def main():
         force_reload=False
     )
     
-    # Restore stdout if you silenced it above
-    # sys.stdout = sys.__stdout__
 
     print(f"Models loaded. Starting agent using [{args.llm.upper()}]...")
     
