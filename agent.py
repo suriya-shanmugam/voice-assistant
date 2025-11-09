@@ -90,7 +90,7 @@ def main():
             print(f"Agent: {llm_response_text}")
 
             # 4. Synthesize and play response
-            generate_and_play_audio(llm_response_text)
+            # generate_and_play_audio(llm_response_text)
 
     except KeyboardInterrupt:
         print("\nExiting agent.")
