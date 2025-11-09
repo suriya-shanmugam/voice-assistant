@@ -3,11 +3,21 @@ import whisper
 import sounddevice as sd
 from scipy.io.wavfile import write
 import numpy as np
+# --- Silence Warnings & Logs BEFORE importing chatty modules if possible ---
+import warnings
+import logging
+import os
+
+# Suppress specific warnings (like the torch.cuda.amp.autocast one)
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", category=UserWarning)
+# Suppress lower-level logging
+logging.getLogger("whisper").setLevel(logging.ERROR)
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' # Suppress TensorFlow/generic backend noise if any
+
 from bark import SAMPLE_RATE, generate_audio, preload_models
-# from bark.api import semantic_to_waveform # Not strictly needed if using generate_audio
 import time
 import argparse
-import os
 import google.generativeai as genai
 import sys
 
@@ -31,9 +41,9 @@ def record_audio(filename, duration, sr):
 def transcribe_audio(filename):
     print("Transcribing audio...")
     # Load model here if not preloaded, but we preload in main() usually.
-    # For simplicity in this function, we assume it's loaded or load it now.
     model = whisper.load_model(WHISPER_MODEL)
-    result = model.transcribe(filename)
+    # verbose=False suppresses the Whisper progress bar
+    result = model.transcribe(filename, verbose=False)
     return result["text"]
 
 # --- 2. LLM Response Generation ---
@@ -60,12 +70,14 @@ def generate_and_play_audio(text_prompt):
         return
         
     print("Synthesizing speech with Bark...")
-    # Bark can be slow. For very long text, you might want to truncate or chunk it.
-    # generate_audio is the all-in-one function.
+    # Bark can still be a bit chatty with tqdm progress bars internally.
+    # Completely silencing it often requires deeper monkey-patching of tqdm,
+    # but suppressing warnings helps significantly.
     audio_array = generate_audio(
         text_prompt,
         history_prompt="v2/en_speaker_6", # A sample voice
-        text_temp=0.7
+        text_temp=0.7,
+        silent=True # Try to silence bark progress if supported by your version
     )
 
     print("Playing audio...")
@@ -95,9 +107,12 @@ def main():
         genai.configure(api_key=api_key)
 
     # --- Pre-load models ---
-    print("Pre-loading Whisper and Bark models...")
+    print("Pre-loading Whisper and Bark models... (this may take a moment)")
+    
+    # Suppress stdout/stderr temporarily for very noisy load operations if needed
+    # sys.stdout = open(os.devnull, 'w')
+    
     whisper.load_model(WHISPER_MODEL)
-    # Bark preloading can take a moment and uses VRAM
     preload_models(
         text_use_gpu=True,
         text_use_small=BARK_MODEL_SIZE == "small",
@@ -108,6 +123,10 @@ def main():
         codec_use_gpu=True,
         force_reload=False
     )
+    
+    # Restore stdout if you silenced it above
+    # sys.stdout = sys.__stdout__
+
     print(f"Models loaded. Starting agent using [{args.llm.upper()}]...")
     
     try:
@@ -117,7 +136,9 @@ def main():
             record_audio(AUDIO_FILE, RECORD_SECONDS, SAMPLE_RATE_REC)
             
             # 2. Transcribe user input
+            start_time = time.time()
             user_text = transcribe_audio(AUDIO_FILE)
+            print(f" [Timing] Transcription: {time.time() - start_time:.2f}s")
 
             # Clean up transcription empty checks
             if not user_text.strip():
@@ -131,22 +152,27 @@ def main():
                 break
 
             # 3. Get LLM response based on selected provider
+            start_time = time.time()
             llm_response_text = ""
             if args.llm == "ollama":
                 llm_response_text = get_ollama_response(user_text)
             elif args.llm == "gemini":
                 llm_response_text = get_gemini_response(user_text)
+            print(f" [Timing] LLM Response ({args.llm}): {time.time() - start_time:.2f}s")
             
             print(f"\nAgent ({args.llm}): {llm_response_text}\n")
 
             # 4. Synthesize and play response
-            # I've uncommented this so it speaks back to you
+            start_time = time.time()
             generate_and_play_audio(llm_response_text)
+            print(f" [Timing] TTS Generation & Playback: {time.time() - start_time:.2f}s")
 
     except KeyboardInterrupt:
         print("\nExiting agent.")
     except Exception as e:
-        print(f"\nAn unexpected error occurred: {e}")
+        # Print full error trace only if it's a real unexpected crash
+        import traceback
+        traceback.print_exc()
 
 if __name__ == "__main__":
     main()
