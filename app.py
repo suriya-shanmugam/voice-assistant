@@ -31,6 +31,9 @@ OLLAMA_MODEL = "llama3.1:latest"
 GEMINI_MODEL = "gemini-2.5-flash" # Fast and efficient for chat
 BARK_MODEL_SIZE = "small" # Use "small" for lower VRAM, or "large" for better quality
 
+# New System Prompt
+SYSTEM_PROMPT = "You're a school teacher. Answer the student's question in simple and short sentences."
+
 # --- 1. Audio Input (STT) ---
 def record_audio(filename, duration, sr):
     print(f"\nRecording for {duration} seconds...")
@@ -52,14 +55,21 @@ def get_ollama_response(prompt_text):
     print(f"Sending prompt to Ollama ({OLLAMA_MODEL})...")
     response = ollama.chat(
         model=OLLAMA_MODEL,
-        messages=[{'role': 'user', 'content': prompt_text}]
+        messages=[
+            {'role': 'system', 'content': SYSTEM_PROMPT},
+            {'role': 'user', 'content': prompt_text}
+        ]
     )
     return response['message']['content']
 
 def get_gemini_response(prompt_text):
     print(f"Sending prompt to Gemini ({GEMINI_MODEL})...")
     try:
-        model = genai.GenerativeModel(GEMINI_MODEL)
+        # Configure the model with the system instruction
+        model = genai.GenerativeModel(
+            GEMINI_MODEL,
+            system_instruction=SYSTEM_PROMPT
+        )
         response = model.generate_content(prompt_text)
         return response.text
     except Exception as e:
@@ -76,26 +86,47 @@ def generate_and_play_audio(text_prompt):
     text_prompt = text_prompt.replace("\n", " ").strip()
 
     # 2. Split text into sentences using regex.
-    # Looks for '.', '!', '?' followed by a space or end of string.
     sentences = re.split(r'(?<=[.!?])\s+', text_prompt)
 
-    # 3. Generate and play each sentence sequentially
-    for sentence in sentences:
-        if len(sentence.strip()) < 2:
-             continue # Skip empty or tiny weird chunks
+    # 3. Smarter Chunking: Accumulate short sentences
+    # Bark works best with ~13-14s of audio. 
+    # A rough heuristic is ~150-200 chars depending on speaking speed.
+    MAX_CHUNK_LEN = 150 
+    current_chunk = ""
 
-        # print(f"Playing chunk: '{sentence[:20]}...'") # Optional debug
-        
-        # silence=True tries to suppress internal Bark progress bars
+    for sentence in sentences:
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+
+        # If adding this sentence exceeds the limit, play the current chunk first
+        if len(current_chunk) + len(sentence) + 1 > MAX_CHUNK_LEN:
+            if current_chunk:
+                # print(f"Playing chunk: '{current_chunk[:30]}...'") 
+                audio_array = generate_audio(
+                    current_chunk,
+                    history_prompt="v2/en_speaker_6",
+                    text_temp=0.7,
+                    silent=True 
+                )
+                sd.play(audio_array, samplerate=SAMPLE_RATE)
+                sd.wait()
+            current_chunk = sentence
+        else:
+            # Add to current chunk
+            current_chunk += " " + sentence if current_chunk else sentence
+
+    # Play whatever is left in the buffer
+    if current_chunk:
+        # print(f"Playing final chunk: '{current_chunk[:30]}...'")
         audio_array = generate_audio(
-            sentence,
+            current_chunk,
             history_prompt="v2/en_speaker_6",
             text_temp=0.7,
             silent=True 
         )
-
         sd.play(audio_array, samplerate=SAMPLE_RATE)
-        sd.wait() # Wait for this sentence to finish before starting the next one
+        sd.wait()
 
     print("Audio playback complete.")
 
